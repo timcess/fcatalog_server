@@ -1,0 +1,216 @@
+#!/usr/bin/env bash
+
+# This script installs fcatalog_server. The installation requires root
+# privileges.
+# Note that you have to run get_deps first.
+
+# Stop on any error:
+set -e
+
+# Name of the new user to be added for use with the fcatalog server:
+FCATALOG_USER_NAME="ufcatalog"
+ENV_NAME="ufcatalog_env"
+BASE_DIR=$PWD
+RUN_USER_NAME="$(logname)"
+
+# Python3 interpreter:
+PYTHON=$(which python3)
+
+# Make and make install catalog1.
+function install_catalog
+{
+    cd catalog1
+    echo "Building libcatalog1:"
+    make
+    echo "Installing libcatalog1"
+    make install
+
+    # Refresh the linker cache:
+    sudo ldconfig
+    echo "Testing libcatalog1:"
+    ./bin/test_catalog1
+
+    cd ..
+}
+
+function debug
+{
+    blue='\033[0;34m'
+    disable_color='\033[0m'
+
+    echo -e "${blue}[+] $1 ${disable_color}"
+}
+
+function info
+{
+    orange='\033[0;33m'
+    disable_color='\033[0m'
+
+    echo -e "${orange}[:] $1 ${disable_color}"
+}
+
+
+function run_as_user
+{
+    info "  '$1'"
+    info "  '$2'"
+    sudo -u "$1" $2
+}
+
+function run
+{
+    info "  '$1'"
+    $1
+}
+
+function create_dir
+{
+    if [ -d "$2" ]
+    then
+        debug "Removing $2"
+        run_as_user root "rm -rf $2"
+    fi
+
+    debug "Creating $2"
+    run_as_user "$1" "mkdir $2"
+}
+
+##########################################
+# Add a new system user:
+##########################################
+function add_fcatalog_user
+{
+    # See here: 
+    # http://askubuntu.com/questions/29359/how-to-add-user-without-home
+    # Remove the user $USER_NAME together with his home directory:
+    set +e
+    userdel -rf $FCATALOG_USER_NAME
+    set -e
+    useradd -s /bin/false -m -d /home/$FCATALOG_USER_NAME $FCATALOG_USER_NAME
+
+    # Create a directory for fcatalog databases:
+    mkdir -p /var/lib/fcatalog
+    # Make $USER_NAME the owner of the directory:
+    sudo chown -R $FCATALOG_USER_NAME:$FCATALOG_USER_NAME /var/lib/fcatalog
+}
+
+###########################################
+# Create a virtualenv at /home/${USER_NAME}
+###########################################
+
+
+function create_virtual_env
+{
+    #Folder in which virtual env will be created
+    #final env path will looks env_folder/ENV_NAME
+    #e.g. /home/ufcatalog/ufcatalog_env
+    env_folder="$2"
+    cv_user_name="$1"
+
+    cd dep/
+
+    # Get the name of the virtualenv tgz:
+    VENV_TGZ=""
+    for f in virtualenv*.tar.gz; do VENV_TGZ=$f; done
+
+    # Get the filename without the extension. This gives the expected name of the
+    # resulting directory:
+    VENV_DIR="${VENV_TGZ%*.tar.gz}"
+
+    cp $VENV_TGZ ${env_folder}/$VENV_TGZ
+
+    cd ${env_folder}
+
+    # Open VENV_TGZ:
+    tar xzf $VENV_TGZ
+
+    # Create an initial virtual env at the home of $cv_user_name
+    debug "Running virtualenv.py script"
+    run_as_user ${cv_user_name} "${PYTHON} $VENV_DIR/virtualenv.py -p $PYTHON $ENV_NAME"
+
+    # Go back to dep/
+    cd $BASE_DIR/dep
+
+    # Remove the virtualenv dir and tgz. They are not needed anymore:
+    rm -rf ${env_folder}/$VENV_DIR
+    rm -rf ${env_folder}/$VENV_TGZ
+
+    cd ${env_folder}
+
+    # Make a log directory:
+    sudo -u ${cv_user_name} mkdir -p log/
+    sudo -u ${cv_user_name} mkdir -p bin/
+    sudo -u ${cv_user_name} mkdir -p bin/databases
+
+}
+
+function setup
+{
+    user_name="$1"
+    install_dir="$2"
+    # "develop" or "install"
+    mode="$3"
+
+    debug "Installing for user '${user_name}'"
+
+    install_catalog
+
+    create_virtual_env ${user_name} ${install_dir}
+
+    # Activate env
+    run "source ${install_dir}/${ENV_NAME}/bin/activate"
+    run "cd ${BASE_DIR}/fcatalog"
+    run "python3 setup.py ${mode}"
+
+    # install fcatalog python package.
+    debug "Installing server binary"
+
+    if [[ "$mode" = "develop" ]]
+    then
+        run_as_user ${user_name} "ln -s ${BASE_DIR}/fcatalog_server ${install_dir}/bin/fcatalog_server"
+    else
+        run_as_user ${user_name} "cp -f ${BASE_DIR}/fcatalog_server ${install_dir}/bin/fcatalog_server"
+        run_as_user root "sudo chown -R $user_name:$user_name ${install_dir}/bin/fcatalog_server"
+    fi
+}
+
+function usage
+{
+    echo "sudo ./install [develop]"
+}
+
+if [[ ! "$(whoami)" = "root" ]]
+then
+    echo "This script must be run as root"
+    exit
+fi
+
+# Installs fcatalog itself
+if [[ "$1" = "-h" ]]
+then
+    usage
+    exit
+fi
+
+if [[ "$1" = "develop" ]]
+then
+    debug "Installing development version"
+
+    # Install in home directory of user running this script
+    install_dir="${HOME}/fcatalog_dev"
+
+    create_dir ${RUN_USER_NAME} ${install_dir}
+
+    setup ${RUN_USER_NAME} ${install_dir} "develop"
+else
+    debug "Installing release verison"
+
+    install_dir="/home/${FCATALOG_USER_NAME}"
+
+    add_fcatalog_user
+
+    setup ${FCATALOG_USER_NAME} ${install_dir} "install"
+fi
+
+
+set +e

@@ -1,0 +1,10 @@
+*.pyc
+*.swo
+*.swp
+*.swn
+*~
+
+build/
+dist/
+fcatalog.egg-info/
+__pycache__/

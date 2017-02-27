@@ -1,0 +1,92 @@
+#! /usr/bin/env python3
+
+import logging
+import os
+import sys
+import signal
+import asyncio
+
+from fcatalog import server_conf
+from fcatalog.server.fcatalog_logic import FCatalogServerLogic
+from fcatalog.server.fcatalog_proto import cser_serializer
+from fcatalog.proto.frame_endpoint import TCPFrameEndpoint
+from fcatalog.proto.msg_endpoint import MsgFromFrame
+
+#Works only on Linux
+LOG_FILE_PATH = os.getenv("HOME") + "/fcatalog.log"
+logging.basicConfig(filename=LOG_FILE_PATH,level=logging.DEBUG)
+
+# Set up logger:
+logger = logging.getLogger(__name__)
+
+@asyncio.coroutine
+def client_handler(reader,writer):
+    """
+    A coroutine for handling one client.
+    """
+    try:
+        logger.debug("Handle client")
+        frame_endpoint = TCPFrameEndpoint(reader,writer)
+        msg_endpoint = MsgFromFrame(cser_serializer,frame_endpoint)
+
+        cwd = os.path.dirname(os.path.abspath(__file__))
+        db_name = server_conf.DB_BASE_NAME
+        db_path = os.path.join(cwd, db_name)
+
+        sl = FCatalogServerLogic(db_path,\
+                server_conf.NUM_HASHES,\
+                msg_endpoint)
+
+        # Handle one client:
+        yield from sl.client_handler()
+
+    except Exception:
+        logging.exception('Unhandled exception at client_handler')
+
+
+def start_server(host,port):
+    """
+    Start a fcatalog server on host <host> and port <port>.
+    """
+
+    cwd = os.path.dirname(os.path.abspath(__file__))
+    db_name = server_conf.DB_BASE_NAME
+    db_path = os.path.join(cwd, db_name)
+
+    # Create database folder if not exists
+    if not os.path.exists(db_path):
+        os.makedirs(db_path)
+
+    loop = asyncio.get_event_loop()
+    coro = asyncio.start_server(client_handler,host=host,port=port,\
+            loop=loop,reuse_address=True)
+    server = loop.run_until_complete(coro)
+
+    def ask_exit(signame):
+        """
+        Exit properly after receiving a signal.
+        """
+        print('Received signal {}'.format(signame))
+        print('Sending signal to close server...')
+        server.close()
+
+    # Set loop handlers to SIGINT and SIGTERM:
+    for signame in ('SIGINT', 'SIGTERM'):
+            loop.add_signal_handler(getattr(signal, signame),
+                    lambda: ask_exit(signame))
+
+    print('FCatalog server is running on {}:{}'.format(host,port))
+
+    loop.run_until_complete(server.wait_closed())
+    loop.close()
+
+###################################################################
+
+if __name__ == '__main__':
+    if len(sys.argv) != 3:
+        print('Usage: {} local_host local_port'.format(sys.argv[0]))
+        sys.exit(2)
+
+    local_host = sys.argv[1]
+    local_port = int(sys.argv[2])
+    start_server(local_host,local_port)

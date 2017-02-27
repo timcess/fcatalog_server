@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+
+function debug
+{
+    blue='\033[0;34m'
+    disable_color='\033[0m'
+
+    echo -e "${blue}[+] $1 ${disable_color}"
+}
+
+function info
+{
+    orange='\033[0;33m'
+    disable_color='\033[0m'
+
+    echo -e "${orange}[:] $1 ${disable_color}"
+}
+
+# Stop on any error:
+set -e
+
+#TODO: kill fcatalog if running
+
+# Name of the new user to be added for use with the fcatalog server:
+USER_NAME="ufcatalog"
+
+cd catalog1
+debug "Uninstalling libcatalog1:"
+make uninstall
+
+set +e
+# Remove the user $USER_NAME together with his home directory:
+info "  userdel -rf ${USER_NAME}"
+userdel -rf $USER_NAME
+
+# Remove fcatalog.conf from the init:
+info "  rm -rf /etc/init/fcatalog.conf"
+rm -rf /etc/init/fcatalog.conf
+
+info "  rm -rf ${HOME}/fcatalog_dev"
+rm -rf ${HOME}/fcatalog_dev
